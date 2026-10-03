@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Google OAuth Tool</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 640px; margin: 40px auto; padding: 0 20px; line-height: 1.6; color: #222; }
+  label { display: block; margin-top: 16px; font-weight: 600; }
+  input { width: 100%; padding: 8px; margin-top: 4px; box-sizing: border-box; font-family: monospace; }
+  button { margin-top: 16px; padding: 10px 18px; cursor: pointer; }
+  pre { background: #f4f4f4; padding: 12px; overflow-x: auto; margin-top: 16px; white-space: pre-wrap; word-break: break-all; }
+  .msg { margin-top: 12px; padding: 10px; border-radius: 4px; }
+  .msg.error { background: #fde2e2; color: #8a1f1f; }
+  .msg.success { background: #e2fde6; color: #1f8a2f; }
+  .copy-btn { margin-left: 8px; font-size: 0.85em; padding: 4px 8px; }
+</style>
+</head>
+<body>
+  <h1>Google OAuth Tool</h1>
+  <p>Enter your own Google Cloud OAuth Client ID and Secret (Web application type,
+  with this page's own URL registered as the Authorized redirect URI — see below).</p>
+
+  <p><strong>Your redirect URI to register in Google Cloud Console:</strong></p>
+  <pre id="redirectUriDisplay"></pre>
+
+  <label for="clientId">Client ID</label>
+  <input id="clientId" type="text" placeholder="xxxxxxxx.apps.googleusercontent.com">
+
+  <label for="clientSecret">Client Secret</label>
+  <input id="clientSecret" type="text" placeholder="GOCSPX-xxxxxxxx">
+
+  <button id="authoriseBtn">Authorise with Google</button>
+
+  <label for="authCode">Authorisation Code</label>
+  <input id="authCode" type="text" placeholder="Filled in automatically after you authorise">
+
+  <button id="exchangeBtn">Get Tokens</button>
+
+  <div id="message"></div>
+
+  <div id="result" style="display:none;">
+    <h3>Your tokens</h3>
+    <pre id="tokenOutput"></pre>
+    <h3>rclone-style config block</h3>
+    <pre id="rcloneOutput"></pre>
+  </div>
+
+<script>
+  const SCOPE = "https://www.googleapis.com/auth/drive";
+  const AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
+  const TOKEN_URL = "https://oauth2.googleapis.com/token";
+
+  // Redirect URI is calculated from wherever this page is actually hosted,
+  // so this file works unmodified on GitHub Pages or your own domain.
+  const redirectUri = window.location.origin + window.location.pathname.replace(/\/?$/, "/") + "callback/";
+  document.getElementById("redirectUriDisplay").textContent = redirectUri;
+
+  const clientIdEl = document.getElementById("clientId");
+  const clientSecretEl = document.getElementById("clientSecret");
+  const authCodeEl = document.getElementById("authCode");
+  const messageEl = document.getElementById("message");
+
+  // Keep values only for this tab's session (cleared when the tab closes).
+  // Needed so they survive the round-trip to Google and back.
+  clientIdEl.value = sessionStorage.getItem("oauthClientId") || "";
+  clientSecretEl.value = sessionStorage.getItem("oauthClientSecret") || "";
+  clientIdEl.addEventListener("input", () => sessionStorage.setItem("oauthClientId", clientIdEl.value));
+  clientSecretEl.addEventListener("input", () => sessionStorage.setItem("oauthClientSecret", clientSecretEl.value));
+
+  // Clean up any values left by the older localStorage version of this page
+  localStorage.removeItem("oauthClientId");
+  localStorage.removeItem("oauthClientSecret");
+
+  // Pick up the code left by the callback page, if present
+  const storedCode = sessionStorage.getItem("oauthCode");
+  if (storedCode) {
+    authCodeEl.value = storedCode;
+    sessionStorage.removeItem("oauthCode");
+    showMessage("Authorisation code received. Click 'Get Tokens' to finish.", "success");
+  }
+  const storedErr = sessionStorage.getItem("oauthError");
+  if (storedErr) {
+    showMessage(storedErr, "error");
+    sessionStorage.removeItem("oauthError");
+  }
+
+  function showMessage(text, type) {
+    messageEl.innerHTML = `<div class="msg ${type}">${text}</div>`;
+  }
+
+  document.getElementById("authoriseBtn").addEventListener("click", () => {
+    const clientId = clientIdEl.value.trim();
+    if (!clientId) { showMessage("Client ID is required.", "error"); return; }
+    const url = new URL(AUTH_URL);
+    url.searchParams.set("client_id", clientId);
+    url.searchParams.set("redirect_uri", redirectUri);
+    url.searchParams.set("response_type", "code");
+    url.searchParams.set("scope", SCOPE);
+    url.searchParams.set("access_type", "offline"); // required to get a refresh token
+    url.searchParams.set("prompt", "consent");       // forces a fresh refresh token every time
+    window.location.href = url.toString();
+  });
+
+  document.getElementById("exchangeBtn").addEventListener("click", async () => {
+    const clientId = clientIdEl.value.trim();
+    const clientSecret = clientSecretEl.value.trim();
+    const code = authCodeEl.value.trim();
+    if (!clientId || !clientSecret || !code) {
+      showMessage("Client ID, Client Secret, and Authorisation Code are all required.", "error");
+      return;
+    }
+    const body = new URLSearchParams({
+      client_id: clientId,
+      client_secret: clientSecret,
+      code: code,
+      grant_type: "authorization_code",
+      redirect_uri: redirectUri
+    });
+    try {
+      const res = await fetch(TOKEN_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: body.toString()
+      });
+      const data = await res.json();
+      if (!res.ok || !data.refresh_token) {
+        showMessage("Error: " + (data.error_description || data.error || "unknown error — check your Client ID/Secret and that the code hasn't already been used."), "error");
+        return;
+      }
+      showMessage("Success — tokens received.", "success");
+      document.getElementById("result").style.display = "block";
+      document.getElementById("tokenOutput").textContent =
+`access_token:  ${data.access_token}
+refresh_token: ${data.refresh_token}
+expires_in:    ${data.expires_in} seconds`;
+
+      const rcloneBlock =
+`[GoogleDrive]
+type = drive
+client_id = ${clientId}
+client_secret = ${clientSecret}
+token = {"access_token":"${data.access_token}","token_type":"Bearer","refresh_token":"${data.refresh_token}","expiry":"${new Date(Date.now() + data.expires_in * 1000).toISOString()}"}
+scope = drive`;
+      document.getElementById("rcloneOutput").textContent = rcloneBlock;
+      authCodeEl.value = ""; // the code is single-use; clear it
+    } catch (e) {
+      showMessage("Request failed: " + e.message, "error");
+    }
+  });
+</script>
+</body>
+</html>

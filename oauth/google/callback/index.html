@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Redirecting…</title>
+</head>
+<body>
+  <p>Processing, please wait…</p>
+<script>
+  const params = new URLSearchParams(window.location.search);
+  const code = params.get("code");
+  const error = params.get("error");
+
+  if (code) {
+    sessionStorage.setItem("oauthCode", code);
+  } else if (error) {
+    sessionStorage.setItem("oauthError", "Google returned an error: " + error);
+  } else {
+    sessionStorage.setItem("oauthError", "No authorisation code was found in the redirect. Did you navigate here directly instead of clicking 'Authorise'?");
+  }
+
+  // Send the browser back to the main tool page, one directory up
+  window.location.href = "../";
+</script>
+</body>
+</html>
